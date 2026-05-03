@@ -13,9 +13,7 @@ from datetime import datetime
 from gesture_detector import GestureDetector
 import uuid
 import openai
-
-
-EDIT_INSTRUCTION = "Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close"
+import asyncio
 
 class JarvisMap:
     def __init__(self):
@@ -438,7 +436,17 @@ class JarvisMap:
                 if self.current_mode == "main" and len(self.open_note_windows) == 0:
                     self.root.after(0, self.start_voice_navigation)
     
-
+    def detect_wave(self, landmarks):
+        # Removed - now handled by GestureDetector
+        return False
+    
+    def detect_clap(self, left_landmarks, right_landmarks):
+        # Removed - now handled by GestureDetector
+        return False
+    
+    def detect_open_fist(self, left_landmarks, right_landmarks):
+        # Removed - now handled by GestureDetector
+        return False
     
     def adjust_microphone(self):
         # Adjust microphone for ambient noise
@@ -585,13 +593,10 @@ class JarvisMap:
         self.note_content.delete(1.0, tk.END)
         self.note_content.insert(1.0, content)
     
-    @staticmethod
-    def _generate_note_id():
-        return f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
-
     def save_current_note(self):
         if self.current_note and self.current_note["title"]:
-            note_id = self._generate_note_id()
+            # Generate unique ID using timestamp and UUID
+            note_id = str(int(time.time() * 1000)) + "_" + str(uuid.uuid4())[:8]
             self.notes[note_id] = self.current_note.copy()
             self.save_notes()
             self.return_to_main()
@@ -721,7 +726,7 @@ class JarvisMap:
             # Edit instruction
             edit_label = tk.Label(
                 note_window,
-                text=EDIT_INSTRUCTION,
+                text="Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close",
                 font=('Arial', 10),
                 fg='#3498db',
                 bg='#2c3e50'
@@ -844,7 +849,7 @@ class JarvisMap:
                     # Create a fresh microphone context for this specific operation
                     with sr.Microphone() as source:
                         self.recognizer.adjust_for_ambient_noise(source, duration=0.1)
-                        edit_label.config(text=f"🎤 {EDIT_INSTRUCTION}", fg='#3498db')
+                        edit_label.config(text="🎤 Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close", fg='#3498db')
                         audio = self.recognizer.listen(source, timeout=2, phrase_time_limit=3)
                     
                     text = self.recognizer.recognize_google(audio).lower()
@@ -862,7 +867,7 @@ class JarvisMap:
                 except (sr.UnknownValueError, sr.WaitTimeoutError):
                     # Reset label on timeout
                     if note_window.winfo_exists():
-                        edit_label.config(text=EDIT_INSTRUCTION, fg='#3498db')
+                        edit_label.config(text="Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close", fg='#3498db')
                     continue
                 except sr.RequestError as e:
                     print(f"Speech recognition error: {e}")
@@ -873,7 +878,7 @@ class JarvisMap:
         finally:
             # Reset label when stopping
             if note_window.winfo_exists():
-                edit_label.config(text=EDIT_INSTRUCTION, fg='#3498db')
+                edit_label.config(text="Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close", fg='#3498db')
             self.release_voice_lock()
     
     def start_note_editing(self, note_window, note_id, content_text, edit_label):
@@ -937,7 +942,7 @@ class JarvisMap:
             edit_label.config(text="⚠️ OpenAI not available. Set OPENAI_API_KEY environment variable.", fg='#e74c3c')
             # Reset after 3 seconds
             self.root.after(3000, lambda: edit_label.config(
-                text=EDIT_INSTRUCTION, 
+                text="Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close", 
                 fg='#3498db'
             ))
             return
@@ -955,7 +960,7 @@ class JarvisMap:
             edit_label.config(text="⚠️ Note is empty - nothing to clean up", fg='#e74c3c')
             # Reset after 2 seconds
             self.root.after(2000, lambda: edit_label.config(
-                text=EDIT_INSTRUCTION, 
+                text="Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close", 
                 fg='#3498db'
             ))
             return
@@ -981,7 +986,7 @@ class JarvisMap:
                 self.root.after(0, lambda: edit_label.config(text="✅ Note cleaned up successfully!", fg='#27ae60'))
                 # Reset after 2 seconds
                 self.root.after(2000, lambda: edit_label.config(
-                    text=EDIT_INSTRUCTION, 
+                    text="Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close", 
                     fg='#3498db'
                 ))
             else:
@@ -990,7 +995,7 @@ class JarvisMap:
                 self.root.after(0, lambda: edit_label.config(text=f"❌ Cleanup failed", fg='#e74c3c'))
                 # Reset after 3 seconds
                 self.root.after(3000, lambda: edit_label.config(
-                    text=EDIT_INSTRUCTION, 
+                    text="Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close", 
                     fg='#3498db'
                 ))
         
@@ -1045,7 +1050,7 @@ class JarvisMap:
                 self.offer_new_note_cleanup()
             else:
                 # Save without cleanup
-                note_id = self._generate_note_id()
+                note_id = str(int(time.time() * 1000)) + "_" + str(uuid.uuid4())[:8]
                 self.notes[note_id] = self.current_note.copy()
                 self.save_notes()
                 self.return_to_main()
@@ -1118,7 +1123,7 @@ class JarvisMap:
         
         def save_without_cleanup():
             dialog.destroy()
-            note_id = self._generate_note_id()
+            note_id = str(int(time.time() * 1000)) + "_" + str(uuid.uuid4())[:8]
             self.notes[note_id] = self.current_note.copy()
             self.save_notes()
             self.return_to_main()
@@ -1145,90 +1150,7 @@ class JarvisMap:
         )
         save_btn.pack(side=tk.LEFT, padx=10)
     
-    def _build_comparison_window(self, original_content, cleaned_content, on_accept, on_reject, on_manual_edit):
-        """Build a side-by-side comparison window. Callbacks receive (comparison_window, clean_text)."""
-        comparison_window = tk.Toplevel(self.root)
-        comparison_window.title("AI Note Cleanup - Compare & Choose")
-        comparison_window.geometry("800x600")
-        comparison_window.configure(bg='#2c3e50')
-
-        tk.Label(
-            comparison_window, text="AI Note Cleanup Comparison",
-            font=('Arial', 16, 'bold'), fg='#ecf0f1', bg='#2c3e50'
-        ).pack(pady=10)
-
-        main_frame = tk.Frame(comparison_window, bg='#2c3e50')
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
-
-        orig_frame = tk.Frame(main_frame, bg='#2c3e50')
-        orig_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
-        tk.Label(orig_frame, text="Original", font=('Arial', 14, 'bold'), fg='#e74c3c', bg='#2c3e50').pack(pady=(0, 5))
-        orig_text = tk.Text(orig_frame, font=('Arial', 11), bg='#34495e', fg='#ecf0f1', wrap=tk.WORD, state=tk.DISABLED)
-        orig_text.pack(fill=tk.BOTH, expand=True)
-        orig_text.config(state=tk.NORMAL)
-        orig_text.insert(1.0, original_content)
-        orig_text.config(state=tk.DISABLED)
-
-        clean_frame = tk.Frame(main_frame, bg='#2c3e50')
-        clean_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
-        tk.Label(clean_frame, text="AI Cleaned", font=('Arial', 14, 'bold'), fg='#27ae60', bg='#2c3e50').pack(pady=(0, 5))
-        clean_text = tk.Text(clean_frame, font=('Arial', 11), bg='#34495e', fg='#ecf0f1', wrap=tk.WORD)
-        clean_text.pack(fill=tk.BOTH, expand=True)
-        clean_text.insert(1.0, cleaned_content)
-
-        button_frame = tk.Frame(comparison_window, bg='#2c3e50')
-        button_frame.pack(pady=20)
-
-        for text, cmd, bg_color in [
-            ("\u2713 Use AI Cleaned Version", lambda: on_accept(comparison_window, clean_text), '#27ae60'),
-            ("\u270e Use My Edits", lambda: on_manual_edit(comparison_window, clean_text), '#3498db'),
-            ("\u2717 Keep Original", lambda: on_reject(comparison_window, clean_text), '#e74c3c'),
-        ]:
-            tk.Button(
-                button_frame, text=text, command=cmd, bg=bg_color,
-                fg='white', font=('Arial', 12, 'bold'), padx=20
-            ).pack(side=tk.LEFT, padx=10)
-
-        tk.Label(
-            comparison_window,
-            text="You can edit the AI cleaned version on the right before accepting it",
-            font=('Arial', 10), fg='#bdc3c7', bg='#2c3e50'
-        ).pack(pady=(0, 10))
-
     def show_new_note_cleanup_comparison(self, original_content, cleaned_content):
-        """Show cleanup comparison for new notes"""
-        def _save_and_close(content, cw):
-            self.current_note['content'] = content
-            note_id = self._generate_note_id()
-            self.notes[note_id] = self.current_note.copy()
-            self.save_notes()
-            cw.destroy()
-            self.return_to_main()
-
-        self._build_comparison_window(
-            original_content, cleaned_content,
-            on_accept=lambda cw, ct: _save_and_close(cleaned_content, cw),
-            on_reject=lambda cw, ct: _save_and_close(original_content, cw),
-            on_manual_edit=lambda cw, ct: _save_and_close(ct.get(1.0, tk.END).strip(), cw),
-        )
-
-    def show_cleanup_comparison(self, window, original_content, cleaned_content):
-        """Show comparison for existing note edits"""
-        def _apply_content(content, cw):
-            if hasattr(window, 'content_text'):
-                window.content_text.delete(1.0, tk.END)
-                window.content_text.insert(1.0, content)
-                if hasattr(window, 'note_id') and window.note_id in self.notes:
-                    self.notes[window.note_id]['content'] = content
-                    self.save_notes()
-            cw.destroy()
-
-        self._build_comparison_window(
-            original_content, cleaned_content,
-            on_accept=lambda cw, ct: _apply_content(cleaned_content, cw),
-            on_reject=lambda cw, ct: cw.destroy(),
-            on_manual_edit=lambda cw, ct: _apply_content(ct.get(1.0, tk.END).strip(), cw),
-        )
         """Show cleanup comparison for new notes"""
         # Similar to the existing comparison but for new notes
         comparison_window = tk.Toplevel(self.root)
@@ -1306,7 +1228,7 @@ class JarvisMap:
         def accept_cleaned():
             # Save with cleaned content
             self.current_note['content'] = cleaned_content
-            note_id = self._generate_note_id()
+            note_id = str(int(time.time() * 1000)) + "_" + str(uuid.uuid4())[:8]
             self.notes[note_id] = self.current_note.copy()
             self.save_notes()
             comparison_window.destroy()
@@ -1314,7 +1236,7 @@ class JarvisMap:
         
         def reject_cleaned():
             # Save with original content
-            note_id = self._generate_note_id()
+            note_id = str(int(time.time() * 1000)) + "_" + str(uuid.uuid4())[:8]
             self.notes[note_id] = self.current_note.copy()
             self.save_notes()
             comparison_window.destroy()
@@ -1324,7 +1246,7 @@ class JarvisMap:
             # Save with manually edited content
             manual_content = clean_text.get(1.0, tk.END).strip()
             self.current_note['content'] = manual_content
-            note_id = self._generate_note_id()
+            note_id = str(int(time.time() * 1000)) + "_" + str(uuid.uuid4())[:8]
             self.notes[note_id] = self.current_note.copy()
             self.save_notes()
             comparison_window.destroy()
@@ -1375,7 +1297,7 @@ class JarvisMap:
     
     def save_without_cleanup(self):
         """Save note without cleanup"""
-        note_id = self._generate_note_id()
+        note_id = str(int(time.time() * 1000)) + "_" + str(uuid.uuid4())[:8]
         self.notes[note_id] = self.current_note.copy()
         self.save_notes()
         self.return_to_main()
@@ -1458,7 +1380,9 @@ class JarvisMap:
         except Exception as e:
             print(f"AI cleanup failed: {str(e)}")
             return note_content, f"Error: {str(e)}"
-
+    
+    def show_cleanup_comparison(self, window, original_content, cleaned_content):
+        """Show a comparison window for the user to accept or reject the cleaned version"""
         comparison_window = tk.Toplevel(self.root)
         comparison_window.title("AI Note Cleanup - Compare & Choose")
         comparison_window.geometry("800x600")
