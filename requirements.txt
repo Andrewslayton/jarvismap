@@ -3,4 +3,5 @@ mediapipe>=0.10.13
 SpeechRecognition>=3.10.0
 pyaudio>=0.2.11
 Pillow>=10.0.0
-numpy>=1.24.0 
+numpy>=1.24.0
+openai>=1.0.0 

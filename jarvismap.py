@@ -12,6 +12,8 @@ import numpy as np
 from datetime import datetime
 from gesture_detector import GestureDetector
 import uuid
+import openai
+import asyncio
 
 class JarvisMap:
     def __init__(self):
@@ -27,7 +29,7 @@ class JarvisMap:
             static_image_mode=False,
             max_num_hands=2,
             min_detection_confidence=0.7,  # Higher accuracy for main page
-            min_tracking_confidence=0.5    # Higher accuracy for main page
+            min_tracking_confidence=0.6    # Higher accuracy for main page
         )
         self.hands_editing = self.mp_hands.Hands(
             static_image_mode=False,
@@ -42,6 +44,19 @@ class JarvisMap:
         
         # Initialize gesture detector
         self.gesture_detector = GestureDetector()
+        
+        # Initialize OpenAI client (you'll need to set OPENAI_API_KEY environment variable)
+        self.openai_client = None
+        try:
+            api_key = os.getenv('OPENAI_API_KEY')
+            if api_key:
+                self.openai_client = openai.OpenAI(api_key=api_key)
+                print("OpenAI client initialized successfully")
+            else:
+                print("OpenAI API key not found. Note cleanup feature will be disabled.")
+                print("Set OPENAI_API_KEY environment variable to enable AI cleanup.")
+        except Exception as e:
+            print(f"OpenAI initialization error: {e}")
         
         # Initialize speech recognition with optimized settings
         self.recognizer = sr.Recognizer()
@@ -566,7 +581,7 @@ class JarvisMap:
                         continue
                     except sr.RequestError as e:
                         print(f"Speech recognition error: {e}")
-                        time.sleep(0.5)  # Shorter sleep
+                        time.sleep(0.5)
                         
             finally:
                 self.release_voice_lock()
@@ -711,7 +726,7 @@ class JarvisMap:
             # Edit instruction
             edit_label = tk.Label(
                 note_window,
-                text="Say 'Edit' to start voice editing, or 8 fingers to save & close",
+                text="Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close",
                 font=('Arial', 10),
                 fg='#3498db',
                 bg='#2c3e50'
@@ -834,7 +849,7 @@ class JarvisMap:
                     # Create a fresh microphone context for this specific operation
                     with sr.Microphone() as source:
                         self.recognizer.adjust_for_ambient_noise(source, duration=0.1)
-                        edit_label.config(text="🎤 Say 'Edit' to start voice editing, or 8 fingers to save & close", fg='#3498db')
+                        edit_label.config(text="🎤 Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close", fg='#3498db')
                         audio = self.recognizer.listen(source, timeout=2, phrase_time_limit=3)
                     
                     text = self.recognizer.recognize_google(audio).lower()
@@ -844,11 +859,15 @@ class JarvisMap:
                         # Switch to edit mode
                         self.root.after(0, self.start_note_editing, note_window, note_id, content_text, edit_label)
                         return
+                    elif "clean up" in text or "cleanup" in text or "clean" in text:
+                        # Start AI cleanup
+                        self.root.after(0, self.start_note_cleanup, note_window, content_text, edit_label)
+                        return
                         
                 except (sr.UnknownValueError, sr.WaitTimeoutError):
                     # Reset label on timeout
                     if note_window.winfo_exists():
-                        edit_label.config(text="Say 'Edit' to start voice editing, or 8 fingers to save & close", fg='#3498db')
+                        edit_label.config(text="Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close", fg='#3498db')
                     continue
                 except sr.RequestError as e:
                     print(f"Speech recognition error: {e}")
@@ -859,7 +878,7 @@ class JarvisMap:
         finally:
             # Reset label when stopping
             if note_window.winfo_exists():
-                edit_label.config(text="Say 'Edit' to start voice editing, or 8 fingers to save & close", fg='#3498db')
+                edit_label.config(text="Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close", fg='#3498db')
             self.release_voice_lock()
     
     def start_note_editing(self, note_window, note_id, content_text, edit_label):
@@ -915,6 +934,76 @@ class JarvisMap:
         content_text.delete(1.0, tk.END)
         content_text.insert(1.0, content)
     
+    def start_note_cleanup(self, note_window, content_text, edit_label):
+        """Start AI cleanup process for the note"""
+        print("start_note_cleanup called")
+        if not self.openai_client:
+            print("OpenAI client is None - showing error message")
+            edit_label.config(text="⚠️ OpenAI not available. Set OPENAI_API_KEY environment variable.", fg='#e74c3c')
+            # Reset after 3 seconds
+            self.root.after(3000, lambda: edit_label.config(
+                text="Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close", 
+                fg='#3498db'
+            ))
+            return
+        
+        # Show processing status
+        print("OpenAI client available - starting cleanup process")
+        edit_label.config(text="🤖 AI is cleaning up your note...", fg='#f39c12')
+        
+        # Get current content
+        current_content = content_text.get(1.0, tk.END).strip()
+        print(f"Content to clean: '{current_content[:50]}...' (length: {len(current_content)})")
+        
+        if not current_content:
+            print("Note content is empty")
+            edit_label.config(text="⚠️ Note is empty - nothing to clean up", fg='#e74c3c')
+            # Reset after 2 seconds
+            self.root.after(2000, lambda: edit_label.config(
+                text="Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close", 
+                fg='#3498db'
+            ))
+            return
+        
+        # Run cleanup in background thread to avoid blocking UI
+        def cleanup_thread():
+            print("Cleanup thread started")
+            cleaned_content, status = self.cleanup_note_with_ai(current_content)
+            print(f"Cleanup returned: status='{status}', content_length={len(cleaned_content)}")
+            
+            if status == "success":
+                print("Cleanup successful - automatically applying cleaned content")
+                # Automatically update the note content
+                self.root.after(0, lambda: content_text.delete(1.0, tk.END))
+                self.root.after(0, lambda: content_text.insert(1.0, cleaned_content))
+                
+                # Save the cleaned content
+                if hasattr(note_window, 'note_id') and note_window.note_id in self.notes:
+                    self.notes[note_window.note_id]['content'] = cleaned_content
+                    self.save_notes()
+                
+                # Show success message briefly
+                self.root.after(0, lambda: edit_label.config(text="✅ Note cleaned up successfully!", fg='#27ae60'))
+                # Reset after 2 seconds
+                self.root.after(2000, lambda: edit_label.config(
+                    text="Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close", 
+                    fg='#3498db'
+                ))
+            else:
+                print(f"Cleanup failed with status: {status}")
+                # Show error briefly
+                self.root.after(0, lambda: edit_label.config(text=f"❌ Cleanup failed", fg='#e74c3c'))
+                # Reset after 3 seconds
+                self.root.after(3000, lambda: edit_label.config(
+                    text="Say 'Edit' to voice edit, 'Clean up' for AI cleanup, or 8 fingers to save & close", 
+                    fg='#3498db'
+                ))
+        
+        print("Starting cleanup background thread")
+        # Start cleanup in background
+        cleanup_thread_obj = threading.Thread(target=cleanup_thread, daemon=True)
+        cleanup_thread_obj.start()
+    
     def load_notes(self):
         if os.path.exists(self.notes_file):
             try:
@@ -955,14 +1044,263 @@ class JarvisMap:
     def save_and_return_to_main(self):
         """Save note and return to main - triggered by 8 fingers gesture"""
         if self.current_note and self.current_note.get("title"):
-            # Generate unique ID using timestamp and UUID  
+            # Check if we should offer AI cleanup for new notes
+            content = self.current_note.get("content", "").strip()
+            if content and self.openai_client and len(content) > 50:  # Only for substantial content
+                self.offer_new_note_cleanup()
+            else:
+                # Save without cleanup
+                note_id = str(int(time.time() * 1000)) + "_" + str(uuid.uuid4())[:8]
+                self.notes[note_id] = self.current_note.copy()
+                self.save_notes()
+                self.return_to_main()
+        else:
+            # If no title, just return to main without saving
+            self.return_to_main()
+    
+    def offer_new_note_cleanup(self):
+        """Offer AI cleanup for new notes before saving"""
+        # Create a simple dialog to ask if user wants AI cleanup
+        dialog = tk.Toplevel(self.root)
+        dialog.title("AI Cleanup Option")
+        dialog.geometry("400x200")
+        dialog.configure(bg='#2c3e50')
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.geometry("+%d+%d" % (self.root.winfo_rootx() + 50, self.root.winfo_rooty() + 50))
+        
+        # Question
+        question_label = tk.Label(
+            dialog,
+            text="Would you like AI to clean up\nyour note before saving?",
+            font=('Arial', 14, 'bold'),
+            fg='#ecf0f1',
+            bg='#2c3e50'
+        )
+        question_label.pack(pady=20)
+        
+        subtitle_label = tk.Label(
+            dialog,
+            text="(Fixes grammar, removes filler words, improves structure)",
+            font=('Arial', 10),
+            fg='#bdc3c7',
+            bg='#2c3e50'
+        )
+        subtitle_label.pack(pady=(0, 20))
+        
+        button_frame = tk.Frame(dialog, bg='#2c3e50')
+        button_frame.pack(pady=10)
+        
+        def cleanup_and_save():
+            dialog.destroy()
+            # Show processing status
+            self.new_note_status.config(text="🤖 AI is cleaning up your note...")
+            
+            # Run cleanup in background
+            def cleanup_thread():
+                content = self.current_note.get("content", "")
+                cleaned_content, status = self.cleanup_note_with_ai(content)
+                
+                if status == "success":
+                    # Automatically use cleaned content and save
+                    self.current_note['content'] = cleaned_content
+                    # Update the display
+                    self.root.after(0, lambda: self.update_note_content(cleaned_content))
+                    self.root.after(0, lambda: self.new_note_status.config(text="✅ Note cleaned and ready to save!"))
+                    # Auto-save after a moment
+                    self.root.after(1000, self.save_without_cleanup)
+                else:
+                    # Save without cleanup on error
+                    self.root.after(0, self.save_without_cleanup)
+                    self.root.after(0, lambda: self.new_note_status.config(
+                        text=f"Cleanup failed, saved original version"
+                    ))
+            
+            cleanup_thread_obj = threading.Thread(target=cleanup_thread, daemon=True)
+            cleanup_thread_obj.start()
+        
+        def save_without_cleanup():
+            dialog.destroy()
             note_id = str(int(time.time() * 1000)) + "_" + str(uuid.uuid4())[:8]
             self.notes[note_id] = self.current_note.copy()
             self.save_notes()
             self.return_to_main()
-        else:
-            # If no title, just return to main without saving
+        
+        cleanup_btn = tk.Button(
+            button_frame,
+            text="✨ Yes, Clean Up",
+            command=cleanup_and_save,
+            bg='#27ae60',
+            fg='white',
+            font=('Arial', 12, 'bold'),
+            padx=20
+        )
+        cleanup_btn.pack(side=tk.LEFT, padx=10)
+        
+        save_btn = tk.Button(
+            button_frame,
+            text="💾 Save As-Is",
+            command=save_without_cleanup,
+            bg='#3498db',
+            fg='white',
+            font=('Arial', 12, 'bold'),
+            padx=20
+        )
+        save_btn.pack(side=tk.LEFT, padx=10)
+    
+    def show_new_note_cleanup_comparison(self, original_content, cleaned_content):
+        """Show cleanup comparison for new notes"""
+        # Similar to the existing comparison but for new notes
+        comparison_window = tk.Toplevel(self.root)
+        comparison_window.title("AI Note Cleanup - Compare & Choose")
+        comparison_window.geometry("800x600")
+        comparison_window.configure(bg='#2c3e50')
+        
+        # Title
+        title_label = tk.Label(
+            comparison_window,
+            text="AI Note Cleanup Comparison",
+            font=('Arial', 16, 'bold'),
+            fg='#ecf0f1',
+            bg='#2c3e50'
+        )
+        title_label.pack(pady=10)
+        
+        # Main frame for side-by-side comparison
+        main_frame = tk.Frame(comparison_window, bg='#2c3e50')
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        
+        # Original content frame
+        orig_frame = tk.Frame(main_frame, bg='#2c3e50')
+        orig_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        
+        orig_label = tk.Label(
+            orig_frame,
+            text="Original",
+            font=('Arial', 14, 'bold'),
+            fg='#e74c3c',
+            bg='#2c3e50'
+        )
+        orig_label.pack(pady=(0, 5))
+        
+        orig_text = tk.Text(
+            orig_frame,
+            font=('Arial', 11),
+            bg='#34495e',
+            fg='#ecf0f1',
+            wrap=tk.WORD,
+            state=tk.DISABLED
+        )
+        orig_text.pack(fill=tk.BOTH, expand=True)
+        orig_text.config(state=tk.NORMAL)
+        orig_text.insert(1.0, original_content)
+        orig_text.config(state=tk.DISABLED)
+        
+        # Cleaned content frame
+        clean_frame = tk.Frame(main_frame, bg='#2c3e50')
+        clean_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
+        
+        clean_label = tk.Label(
+            clean_frame,
+            text="AI Cleaned",
+            font=('Arial', 14, 'bold'),
+            fg='#27ae60',
+            bg='#2c3e50'
+        )
+        clean_label.pack(pady=(0, 5))
+        
+        clean_text = tk.Text(
+            clean_frame,
+            font=('Arial', 11),
+            bg='#34495e',
+            fg='#ecf0f1',
+            wrap=tk.WORD
+        )
+        clean_text.pack(fill=tk.BOTH, expand=True)
+        clean_text.insert(1.0, cleaned_content)
+        
+        # Buttons frame
+        button_frame = tk.Frame(comparison_window, bg='#2c3e50')
+        button_frame.pack(pady=20)
+        
+        def accept_cleaned():
+            # Save with cleaned content
+            self.current_note['content'] = cleaned_content
+            note_id = str(int(time.time() * 1000)) + "_" + str(uuid.uuid4())[:8]
+            self.notes[note_id] = self.current_note.copy()
+            self.save_notes()
+            comparison_window.destroy()
             self.return_to_main()
+        
+        def reject_cleaned():
+            # Save with original content
+            note_id = str(int(time.time() * 1000)) + "_" + str(uuid.uuid4())[:8]
+            self.notes[note_id] = self.current_note.copy()
+            self.save_notes()
+            comparison_window.destroy()
+            self.return_to_main()
+        
+        def use_manual_edit():
+            # Save with manually edited content
+            manual_content = clean_text.get(1.0, tk.END).strip()
+            self.current_note['content'] = manual_content
+            note_id = str(int(time.time() * 1000)) + "_" + str(uuid.uuid4())[:8]
+            self.notes[note_id] = self.current_note.copy()
+            self.save_notes()
+            comparison_window.destroy()
+            self.return_to_main()
+        
+        accept_btn = tk.Button(
+            button_frame,
+            text="✓ Use AI Cleaned Version",
+            command=accept_cleaned,
+            bg='#27ae60',
+            fg='white',
+            font=('Arial', 12, 'bold'),
+            padx=20
+        )
+        accept_btn.pack(side=tk.LEFT, padx=10)
+        
+        edit_btn = tk.Button(
+            button_frame,
+            text="✎ Use My Edits",
+            command=use_manual_edit,
+            bg='#3498db',
+            fg='white',
+            font=('Arial', 12, 'bold'),
+            padx=20
+        )
+        edit_btn.pack(side=tk.LEFT, padx=10)
+        
+        reject_btn = tk.Button(
+            button_frame,
+            text="✗ Keep Original",
+            command=reject_cleaned,
+            bg='#e74c3c',
+            fg='white',
+            font=('Arial', 12, 'bold'),
+            padx=20
+        )
+        reject_btn.pack(side=tk.LEFT, padx=10)
+        
+        # Instructions
+        instruction_label = tk.Label(
+            comparison_window,
+            text="You can edit the AI cleaned version on the right before accepting it",
+            font=('Arial', 10),
+            fg='#bdc3c7',
+            bg='#2c3e50'
+        )
+        instruction_label.pack(pady=(0, 10))
+    
+    def save_without_cleanup(self):
+        """Save note without cleanup"""
+        note_id = str(int(time.time() * 1000)) + "_" + str(uuid.uuid4())[:8]
+        self.notes[note_id] = self.current_note.copy()
+        self.save_notes()
+        self.return_to_main()
 
     def acquire_voice_lock(self):
         """Acquire voice lock to prevent multiple voice operations"""
@@ -1010,6 +1348,181 @@ class JarvisMap:
             if window.winfo_exists():
                 self.save_and_close_note_window(window)
                 break
+
+    def cleanup_note_with_ai(self, note_content):
+        """Use OpenAI to clean up and improve note content"""
+        if not self.openai_client:
+            print("OpenAI client not available for cleanup")
+            return note_content, "OpenAI not available"
+        
+        print(f"Starting AI cleanup for content: {note_content[:100]}...")
+        try:
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",  # Cheapest model available
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Clean up this voice-to-text note: fix grammar, remove filler words (um, uh, like), break up run-on sentences, organize into paragraphs. Keep original meaning. Return only cleaned text."
+                    },
+                    {
+                        "role": "user",
+                        "content": note_content
+                    }
+                ],
+                max_tokens=500,  # Reduced for cost savings - most notes won't need more
+                temperature=0.1  # Lower for more consistent/cheaper results
+            )
+            
+            cleaned_content = response.choices[0].message.content.strip()
+            print(f"AI cleanup successful. Original length: {len(note_content)}, Cleaned length: {len(cleaned_content)}")
+            return cleaned_content, "success"
+            
+        except Exception as e:
+            print(f"AI cleanup failed: {str(e)}")
+            return note_content, f"Error: {str(e)}"
+    
+    def show_cleanup_comparison(self, window, original_content, cleaned_content):
+        """Show a comparison window for the user to accept or reject the cleaned version"""
+        comparison_window = tk.Toplevel(self.root)
+        comparison_window.title("AI Note Cleanup - Compare & Choose")
+        comparison_window.geometry("800x600")
+        comparison_window.configure(bg='#2c3e50')
+        
+        # Title
+        title_label = tk.Label(
+            comparison_window,
+            text="AI Note Cleanup Comparison",
+            font=('Arial', 16, 'bold'),
+            fg='#ecf0f1',
+            bg='#2c3e50'
+        )
+        title_label.pack(pady=10)
+        
+        # Main frame for side-by-side comparison
+        main_frame = tk.Frame(comparison_window, bg='#2c3e50')
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        
+        # Original content frame
+        orig_frame = tk.Frame(main_frame, bg='#2c3e50')
+        orig_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        
+        orig_label = tk.Label(
+            orig_frame,
+            text="Original",
+            font=('Arial', 14, 'bold'),
+            fg='#e74c3c',
+            bg='#2c3e50'
+        )
+        orig_label.pack(pady=(0, 5))
+        
+        orig_text = tk.Text(
+            orig_frame,
+            font=('Arial', 11),
+            bg='#34495e',
+            fg='#ecf0f1',
+            wrap=tk.WORD,
+            state=tk.DISABLED
+        )
+        orig_text.pack(fill=tk.BOTH, expand=True)
+        orig_text.config(state=tk.NORMAL)
+        orig_text.insert(1.0, original_content)
+        orig_text.config(state=tk.DISABLED)
+        
+        # Cleaned content frame
+        clean_frame = tk.Frame(main_frame, bg='#2c3e50')
+        clean_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
+        
+        clean_label = tk.Label(
+            clean_frame,
+            text="AI Cleaned",
+            font=('Arial', 14, 'bold'),
+            fg='#27ae60',
+            bg='#2c3e50'
+        )
+        clean_label.pack(pady=(0, 5))
+        
+        clean_text = tk.Text(
+            clean_frame,
+            font=('Arial', 11),
+            bg='#34495e',
+            fg='#ecf0f1',
+            wrap=tk.WORD
+        )
+        clean_text.pack(fill=tk.BOTH, expand=True)
+        clean_text.insert(1.0, cleaned_content)
+        
+        # Buttons frame
+        button_frame = tk.Frame(comparison_window, bg='#2c3e50')
+        button_frame.pack(pady=20)
+        
+        def accept_cleaned():
+            # Update the original note window with cleaned content
+            if hasattr(window, 'content_text'):
+                window.content_text.delete(1.0, tk.END)
+                window.content_text.insert(1.0, cleaned_content)
+                # Save the note with cleaned content
+                if hasattr(window, 'note_id') and window.note_id in self.notes:
+                    self.notes[window.note_id]['content'] = cleaned_content
+                    self.save_notes()
+            comparison_window.destroy()
+        
+        def reject_cleaned():
+            comparison_window.destroy()
+        
+        def use_manual_edit():
+            # Get manually edited content from the clean_text widget
+            manual_content = clean_text.get(1.0, tk.END).strip()
+            if hasattr(window, 'content_text'):
+                window.content_text.delete(1.0, tk.END)
+                window.content_text.insert(1.0, manual_content)
+                # Save the note with manually edited content
+                if hasattr(window, 'note_id') and window.note_id in self.notes:
+                    self.notes[window.note_id]['content'] = manual_content
+                    self.save_notes()
+            comparison_window.destroy()
+        
+        accept_btn = tk.Button(
+            button_frame,
+            text="✓ Use AI Cleaned Version",
+            command=accept_cleaned,
+            bg='#27ae60',
+            fg='white',
+            font=('Arial', 12, 'bold'),
+            padx=20
+        )
+        accept_btn.pack(side=tk.LEFT, padx=10)
+        
+        edit_btn = tk.Button(
+            button_frame,
+            text="✎ Use My Edits",
+            command=use_manual_edit,
+            bg='#3498db',
+            fg='white',
+            font=('Arial', 12, 'bold'),
+            padx=20
+        )
+        edit_btn.pack(side=tk.LEFT, padx=10)
+        
+        reject_btn = tk.Button(
+            button_frame,
+            text="✗ Keep Original",
+            command=reject_cleaned,
+            bg='#e74c3c',
+            fg='white',
+            font=('Arial', 12, 'bold'),
+            padx=20
+        )
+        reject_btn.pack(side=tk.LEFT, padx=10)
+        
+        # Instructions
+        instruction_label = tk.Label(
+            comparison_window,
+            text="You can edit the AI cleaned version on the right before accepting it",
+            font=('Arial', 10),
+            fg='#bdc3c7',
+            bg='#2c3e50'
+        )
+        instruction_label.pack(pady=(0, 10))
 
 if __name__ == "__main__":
     app = JarvisMap()

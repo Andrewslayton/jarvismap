@@ -9,8 +9,7 @@ class GestureDetector:
         self.gesture_cooldown = 2.0
     
     def detect_wave(self, landmarks, sensitive_mode=False):
-        """Detect hand waving gesture based on wrist movement"""
-        wrist = landmarks[0]  # Wrist landmark
+        wrist = landmarks[0]  
         current_time = time.time()
         self.wave_positions.append((wrist.x, current_time))
         
