@@ -1,4 +1,3 @@
-import numpy as np
 import time
 from collections import deque
 
@@ -8,6 +7,23 @@ class GestureDetector:
         self.last_gesture_time = 0
         self.gesture_cooldown = 2.0
     
+    def _check_cooldown(self):
+        current_time = time.time()
+        if current_time - self.last_gesture_time > self.gesture_cooldown:
+            self.last_gesture_time = current_time
+            return True
+        return False
+
+    def _count_fingers(self, landmarks, include_thumb=True, threshold=0.02):
+        """Count extended fingers. Thumb uses x-axis, others use y-axis."""
+        count = 0
+        if include_thumb and abs(landmarks[4].x - landmarks[3].x) > 0.04:
+            count += 1
+        for tip, pip in ((8, 6), (12, 10), (16, 14), (20, 18)):
+            if landmarks[tip].y < landmarks[pip].y - threshold:
+                count += 1
+        return count
+
     def detect_wave(self, landmarks, sensitive_mode=False):
         wrist = landmarks[0]  
         current_time = time.time()
@@ -27,7 +43,6 @@ class GestureDetector:
         if len(self.wave_positions) < min_positions:
             return False
         
-
         positions = list(self.wave_positions)
         x_positions = [pos[0] for pos in positions]
         times = [pos[1] for pos in positions]
@@ -42,12 +57,9 @@ class GestureDetector:
         
         is_wave = (x_range > min_range and direction_changes >= min_changes and time_range < max_time)
         
-        if is_wave:
-            current_time = time.time()
-            if current_time - self.last_gesture_time > self.gesture_cooldown:
-                self.last_gesture_time = current_time
-                self.wave_positions.clear()
-                return True
+        if is_wave and self._check_cooldown():
+            self.wave_positions.clear()
+            return True
         
         return False
     
@@ -55,87 +67,32 @@ class GestureDetector:
         """Detect two held fists to stop recording"""
         left_closed = not self.is_hand_open(left_landmarks)
         right_closed = not self.is_hand_open(right_landmarks)
-        
-        # Both hands are fists
-        if left_closed and right_closed:
-            current_time = time.time()
-            if current_time - self.last_gesture_time > self.gesture_cooldown:
-                self.last_gesture_time = current_time
-                return True
-        
-        return False
+        return left_closed and right_closed and self._check_cooldown()
     
     def detect_thumbs_up_save(self, landmarks):
         """Detect thumbs up gesture to save note"""
-        thumb_tip = landmarks[4]  # Thumb tip
-        thumb_mcp = landmarks[2]  # Thumb MCP joint
-        index_tip = landmarks[8]  # Index finger tip
-        middle_tip = landmarks[12]  # Middle finger tip
-        ring_tip = landmarks[16]  # Ring finger tip
-        pinky_tip = landmarks[20]  # Pinky tip
-        wrist = landmarks[0]  # Wrist
-        thumb_up = thumb_tip.y < thumb_mcp.y - 0.03
-        
-        fingers_down = (index_tip.y > wrist.y - 0.05 and 
-                       middle_tip.y > wrist.y - 0.05 and 
-                       ring_tip.y > wrist.y - 0.05 and 
-                       pinky_tip.y > wrist.y - 0.05)
-        
-        if thumb_up and fingers_down:
-            current_time = time.time()
-            if current_time - self.last_gesture_time > self.gesture_cooldown:
-                self.last_gesture_time = current_time
-                return True
-        
-        return False
+        thumb_up = landmarks[4].y < landmarks[2].y - 0.03
+        wrist_y = landmarks[0].y
+        fingers_down = all(
+            landmarks[tip].y > wrist_y - 0.05
+            for tip in (8, 12, 16, 20)
+        )
+        return thumb_up and fingers_down and self._check_cooldown()
     
     def detect_two_fingers_cancel(self, landmarks):
         """Detect exactly two fingers held up to cancel/discard note"""
-        # Check if exactly 2 fingers are extended
-        finger_tips = [4, 8, 12, 16, 20] 
-        finger_pips = [3, 6, 10, 14, 18]  
-        
-        extended_fingers = 0
-        
-        for tip, pip in zip(finger_tips, finger_pips):
-            # For thumb, check x-axis (thumb moves differently)
-            if tip == 4:  # Thumb
-                if abs(landmarks[tip].x - landmarks[pip].x) > 0.04:
-                    extended_fingers += 1
-            else:  # Other fingers, check y-axis
-                if landmarks[tip].y < landmarks[pip].y - 0.02:
-                    extended_fingers += 1
-        
-        # Cancel gesture: exactly 2 fingers extended
-        if extended_fingers == 2:
-            current_time = time.time()
-            if current_time - self.last_gesture_time > self.gesture_cooldown:
-                self.last_gesture_time = current_time
-                return True
-        
-        return False
+        return self._count_fingers(landmarks, include_thumb=True) == 2 and self._check_cooldown()
     
     def detect_open_fist(self, left_landmarks, right_landmarks):
         """Detect one open hand and one closed fist for voice navigation"""
         left_open = self.is_hand_open(left_landmarks)
         right_open = self.is_hand_open(right_landmarks)
-        
-        # One hand open, one closed
-        is_gesture = (left_open and not right_open) or (not left_open and right_open)
-        
-        if is_gesture:
-            current_time = time.time()
-            if current_time - self.last_gesture_time > self.gesture_cooldown:
-                self.last_gesture_time = current_time
-                return True
-        
-        return False
+        return (left_open != right_open) and self._check_cooldown()
     
     def get_palm_center(self, landmarks):
         """Calculate approximate palm center from landmarks"""
-        # Use wrist and middle finger MCP joint to approximate palm center
         wrist = landmarks[0]
-        middle_mcp = landmarks[9]  # Middle finger MCP joint
+        middle_mcp = landmarks[9]
         
         palm_x = (wrist.x + middle_mcp.x) / 2
         palm_y = (wrist.y + middle_mcp.y) / 2
@@ -144,53 +101,15 @@ class GestureDetector:
         return (palm_x, palm_y, palm_z)
     
     def is_hand_open(self, landmarks):
-        """Determine if hand is open based on finger positions"""
-        # Check if fingers are extended
-        finger_tips = [4, 8, 12, 16, 20]  # Thumb, Index, Middle, Ring, Pinky tips
-        finger_pips = [3, 6, 10, 14, 18]  # Corresponding PIP joints
-        
-        extended_fingers = 0
-        
-        for tip, pip in zip(finger_tips, finger_pips):
-            # For thumb, check x-axis (thumb moves differently)
-            if tip == 4:  # Thumb
-                if abs(landmarks[tip].x - landmarks[pip].x) > 0.04:
-                    extended_fingers += 1
-            else:  # Other fingers, check y-axis
-                if landmarks[tip].y < landmarks[pip].y - 0.02:
-                    extended_fingers += 1
-        
-        # Hand is considered open if at least 3 fingers are extended
-        return extended_fingers >= 3
+        """Hand is open if at least 3 fingers are extended"""
+        return self._count_fingers(landmarks, include_thumb=True) >= 3
     
     def detect_eight_fingers_save(self, left_landmarks, right_landmarks):
-        """Detect 4 fingers on each hand (8 total) to save note"""
-        # Check if 4 fingers are extended on left hand
+        """Detect 4 fingers on each hand (8 total, excluding thumbs) to save note"""
         left_fingers = self.count_extended_fingers(left_landmarks)
-        # Check if 4 fingers are extended on right hand  
         right_fingers = self.count_extended_fingers(right_landmarks)
-        
-        # Save gesture: 4 fingers on each hand (8 total)
-        if left_fingers == 4 and right_fingers == 4:
-            current_time = time.time()
-            if current_time - self.last_gesture_time > self.gesture_cooldown:
-                self.last_gesture_time = current_time
-                return True
-        
-        return False
+        return left_fingers == 4 and right_fingers == 4 and self._check_cooldown()
     
     def count_extended_fingers(self, landmarks):
-        """Count how many fingers are extended on a hand (excluding thumb for cleaner detection)"""
-        extended_count = 0
-        
-        # Finger tip and pip joint indices (excluding thumb for cleaner detection)
-        finger_tips = [8, 12, 16, 20]  # Index, Middle, Ring, Pinky tips
-        finger_pips = [6, 10, 14, 18]  # Corresponding PIP joints
-        
-        # Check each finger with slightly relaxed threshold for faster detection
-        for tip, pip in zip(finger_tips, finger_pips):
-            # Finger is extended if tip is higher than pip joint
-            if landmarks[tip].y < landmarks[pip].y - 0.015:  # Slightly reduced threshold
-                extended_count += 1
-        
-        return extended_count 
+        """Count extended fingers excluding thumb (relaxed threshold for faster detection)"""
+        return self._count_fingers(landmarks, include_thumb=False, threshold=0.015)
